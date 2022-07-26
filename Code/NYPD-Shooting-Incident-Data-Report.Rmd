@@ -1,0 +1,513 @@
+---
+title: 'NYPD Shooting Incident Data Report'
+subtitle: 'DTSA 5301 FINAL'
+knit: (function(inputFile, encoding){
+  rmarkdown::render(inputFile, encoding=encoding, output_dir='../')})
+output: pdf_document
+header-includes: \usepackage{fvextra} \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, fig.align='center')
+```
+
+### **Data:**
+
+*NYPD Shooting Incident Data (Historic)*
+
+This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included. This data can be used by the public to explore the nature of shooting/criminal activity. Please refer to [NYPD Shooting Incident Data (Historic) - CKAN](https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic) for additional information about this dataset.
+
+### **Analysis Deliverables:**
+
+1.  Day(s) and time(s) when the most shooting incidents occurred
+
+2.  Location(s) where the most shooting incidents occurred
+
+3.  Age, sex, and race of the perpetrators
+
+4.  Age, sex, and race of the victims
+
+5.  Best predictor(s) of shooting incidents
+
+# \textbf{\textcolor{blue}{Load/Install Packages}}
+
+```{r packages}
+require('pacman', quietly=T)
+
+pacman::p_load(tidyverse, janitor, install = T)
+
+if(!'relaimpo' %in% installed.packages()){
+  install.packages('relaimpo', dependencies=T, quiet=T)
+  }else{suppressMessages(library(relaimpo, include.only='calc.relimp'))}
+```
+
+# \textbf{\textcolor{blue}{Read Data}}
+
+```{r read_data}
+### Read in CSV-formatted dataset from URL
+data<-read.csv('https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD')
+
+### Preview dataset
+# remove empty cells
+# shorten number of previewed elements to 3 per variable
+# shorten number of characters shown for character strings to 20
+str(data[apply(data !='', 1, all),], vec.len=3, nchar.max=20)
+```
+
+# \textbf{\textcolor{blue}{Tidy and Transform Data}}
+
+**ANALYSIS VARIABLES:**
+
+-   'INCIDENT_KEY' = Randomly generated persistent ID for each arrest
+
+-   'OCCUR_DATE' = Exact date of the shooting incident
+
+-   'OCCUR_TIME' = Exact time of the shooting incident
+
+-   'BORO' = Borough where the shooting incident occurred
+
+-   'LOCATION_DESC' = Location of the shooting incident
+
+-   'PERP_AGE_GROUP' = Perpetrator's age within a category
+
+-   'PERP_SEX' = Perpetrator's sex description
+
+-   'PERP_RACE' = Perpetrator's race description
+
+-   'VIC_AGE_GROUP' = Victim's age within a category
+
+-   'VIC_SEX' = Victim's sex description
+
+-   'VIC_RACE' = Victim's race description
+
+```{r clean_data.1}
+### Select relevant variables for analysis and set blanks in data to NA
+data=data %>% select(INCIDENT_KEY, OCCUR_DATE, OCCUR_TIME, BORO, LOCATION_DESC, 
+                     starts_with('perp'), starts_with('vic')) %>% # select relevant variables
+  na_if('') # set blanks to NA
+
+head(data, 10) # preview dataset
+```
+
+```{r clean_data.2.1}
+### See total number of NAs in each variable in data
+sapply(data, function(x) sum(is.na(x)))
+```
+
+```{r clean_data.2.2}
+### In order to avoid/minimize bias, convert NA values to 'UNKNOWN' so they can still be reported
+data=data %>% replace(is.na(.), 'UNKNOWN')
+
+### Make sure no more NA values in dataset
+any(is.na(data)) # if no NA values in data output is 'FALSE'
+```
+
+```{r clean_data.3}
+### View unique elements in each analysis variable
+lapply(select(data, BORO:VIC_RACE), unique)
+```
+
+```{r clean_data.4}
+### Remove extraneous/outlier values from dataset
+data=data %>% filter(PERP_AGE_GROUP!='1020' & PERP_AGE_GROUP!='940' & PERP_AGE_GROUP!='224')
+
+### Recode 'U' to 'UNKNOWN' in 'PERP_SEX' & 'VIC_SEX' variables
+### Recode 'NONE' to 'UNKNOWN' in 'LOCATION_DESC' variable
+data=data %>% mutate(across(c(PERP_SEX, VIC_SEX), ~recode(., 'U'='UNKNOWN')),
+                     LOCATION_DESC=recode(LOCATION_DESC, 'NONE'='UNKNOWN'))
+
+### View unique elements in each analysis variable to make sure everything is correct
+lapply(select(data, BORO:VIC_RACE), unique)
+```
+
+## \textcolor{blue}{Format Analysis Variables}
+
+```{r clean_data.5}
+### Create 'OCCUR_DAY' variable => convert 'OCCUR_DATE' variable to day of the week factor variable
+### Create 'OCCUR_YEAR' variable => extract year from 'OCCUR_DATE' variable
+data=data %>% mutate(OCCUR_DAY=factor(weekdays(as.Date(OCCUR_DATE, format='%m/%d/%Y'), abbreviate=T), 
+                                      levels=c('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')), 
+                     .after='OCCUR_TIME') %>% 
+  mutate(OCCUR_YEAR=as.integer(format(as.Date(OCCUR_DATE, format='%m/%d/%Y'), '%Y')), .after='INCIDENT_KEY') %>% 
+  select(-OCCUR_DATE)
+
+### Convert 'OCCUR_TIME' to 24-hour format => extract HOUR of day as factor variable
+data=data %>% mutate(OCCUR_TIME=as.factor(format(strptime(OCCUR_TIME,'%H:%M:%S'),'%H')))
+
+### Create 'YR_TOTAL_INCIDENTS' variable => total number of incidents per year
+data=data %>% select(INCIDENT_KEY, OCCUR_YEAR) %>% distinct(INCIDENT_KEY, .keep_all=T) %>% 
+  group_by(OCCUR_YEAR) %>% add_count(OCCUR_YEAR, name='YR_TOTAL_INCIDENTS') %>% ungroup() %>% 
+  left_join(data)
+
+### Convert variables to factors
+data=data %>% mutate(across(c(BORO:VIC_RACE), ~as.factor(.)))
+
+str(data, vec.len=3, nchar.max=20) # preview dataset
+```
+
+```{r data_summary}
+summary(select(data, BORO:VIC_RACE)) # view summary of dataset variables
+
+data %>% distinct(INCIDENT_KEY) %>% count() # total number of shooting incidents
+```
+
+# \textbf{\textcolor{blue}{Visualizations and Analysis}}
+
+## *1. **Day(s) and time(s) when the most shooting incidents occurred***
+
+```{r time_day_plot}
+#### PLOT: Number of Incidents x Time of Day, Grouped by Days of the Week
+data %>% distinct(INCIDENT_KEY, .keep_all=T) %>% # remove duplicate incidents
+  group_by(OCCUR_DAY) %>% count(OCCUR_TIME) %>% # count total number of incidents by time of day
+  ggplot(aes(x=OCCUR_TIME, y=n, group=OCCUR_DAY)) + # plot
+  geom_line(aes(color=OCCUR_DAY)) + 
+  geom_point(size=1.5, aes(color=OCCUR_DAY)) + 
+  scale_fill_hue(c=90) + 
+  scale_x_discrete(breaks=sort(unique(data$OCCUR_TIME))[c(TRUE, FALSE)]) +
+  labs(title='NYPD Shooting Incidents by Time of Day and Day of the Week\n', 
+       x='Time of Day (24-hr)', y='Number of Incidents', 
+       color='Week Day', 
+       subtitle=paste(min(data$OCCUR_YEAR), max(data$OCCUR_YEAR), sep='-')) +
+  theme_minimal() + 
+  theme(plot.title=element_text(hjust=0.5, face='bold', size=14), 
+        axis.title.x=element_text(vjust=-1, face='bold', size=12), axis.title.y=element_text(vjust=2.5, face='bold', size=12),
+        axis.text.x=element_text(size=10), axis.text.y=element_text(size=10), 
+        legend.text=element_text(size=10), legend.title=element_text(size=11, face='bold'),
+        plot.subtitle=element_text(hjust=0, face='italic', size=10),
+        plot.margin=margin(0.5,0.5,0.5,0.5, 'cm'))
+```
+
+```{r days_analyze}
+#### ANALYZE: Number of Incidents x Day of the Week
+days=data %>% distinct(INCIDENT_KEY, .keep_all=T) %>% # remove duplicate incidents so day and time of occurrence for same incident isn't counted multiple times
+  count(OCCUR_DAY) %>% # count total number of incidents by day
+  mutate(PERCENT=round(n/sum(n), 3)*100, # relative percent of total number of incidents per day
+         QUANT=ntile(n, 4)) %>% # split data into quantiles (0%, 25%, 50%, 75%, 100%)
+  arrange(across(c(PERCENT, QUANT), desc)) # arrange by quantile and relative percent of total number of incidents per day (descending)
+
+days # view dataset
+```
+
+```{r days_plot}
+#### PLOT: Number of Incidents x Day of the Week
+days %>%
+  ggplot(aes(x=OCCUR_DAY, y=n, fill=OCCUR_DAY)) + # plot
+  geom_bar(stat='identity') + 
+  scale_fill_hue(c=90) + 
+  labs(title='NYPD Shooting Incidents by Day of the Week\n', 
+       x='Week Day', y='Number of Incidents', 
+       subtitle=paste(min(data$OCCUR_YEAR), max(data$OCCUR_YEAR), sep='-')) + 
+  theme_minimal() + 
+  theme(plot.title=element_text(hjust=0.5, face='bold', size=14), 
+        axis.title.x=element_text(vjust=-1, face='bold', size=12), axis.title.y=element_text(vjust=2.5, face='bold', size=12),
+        axis.text.x=element_text(size=10), axis.text.y=element_text(size=10),
+        legend.position='none', 
+        plot.subtitle=element_text(hjust=0, face='italic', size=10),
+        plot.margin=margin(0.5,0.5,0.5,0.5, 'cm'))
+```
+
+```{r, echo=FALSE}
+rm(days) # remove `days` dataset
+```
+
+```{r times_analyze.1}
+#### ANALYZE: Number of Incidents x Time of Day
+times=data %>% distinct(INCIDENT_KEY, .keep_all=T) %>% # remove duplicate incidents so day and time of occurrence for same incident isn't counted multiple times
+  count(OCCUR_TIME) %>% # count total number of incidents by time of day
+  mutate(PERCENT=round(n/sum(n), 3)*100, # relative percent of total number of incidents per day
+         QUANT=ntile(n, 4)) %>% # split data into quantiles (0%, 25%, 50%, 75%, 100%)
+  arrange(across(c(PERCENT, QUANT), desc)) # arrange by quantile and relative percent of total number of incidents per day (descending)
+
+times # view dataset
+```
+
+```{r times_analyze.2}
+#### ANALYZE: Percent of Crimes by Time Range
+times %>% 
+  mutate(OCCUR_TIME_12=str_replace(format(strptime(OCCUR_TIME,'%H'),'%I'),' ', ''), # 12-hour time variable
+         OCCUR_TIME_AP=str_sub(str_replace(format(strptime(OCCUR_TIME,'%H'),'%I %p'),' ', ''), -2)) %>% # AM/PM time variable
+  group_by(QUANT) %>% arrange(desc(OCCUR_TIME_AP), OCCUR_TIME) %>% # order by times of day
+  mutate(OCCUR_TIME_RANGE=paste0(OCCUR_TIME_12, OCCUR_TIME_AP, collapse = ", ")) %>% # list all 12-hour AM/PM time variables in quantile in column
+  group_by(OCCUR_TIME_RANGE) %>% summarise(TOTAL_PERCENT=sum(PERCENT)) %>% # sum relative percentages within groups to create total relative percentage of shootings that occur during that time range
+  distinct(OCCUR_TIME_RANGE, TOTAL_PERCENT) %>% bind_rows() %>% arrange(desc(TOTAL_PERCENT)) # bind split data back into one dataset and arrange by relative total percent (descending)
+```
+
+```{r times_plot}
+#### PLOT: Number of Incidents x Time of Day
+times %>% 
+  ggplot(aes(x=OCCUR_TIME, y=n, group=1)) + # plot
+  geom_line(size=1.2, alpha=0.4) +
+  geom_point(fill='white', size=2, stroke=1.5, shape=21) +
+  scale_x_discrete(breaks=sort(unique(times$OCCUR_TIME))[c(TRUE, FALSE)]) +
+  scale_y_continuous(breaks=seq(0, 1800, by=200)) +
+  labs(title='NYPD Shooting Incidents by Time of Day\n',
+       x='Time of Day (24-hr)', y='Number of Incidents', 
+       subtitle=paste(min(data$OCCUR_YEAR), max(data$OCCUR_YEAR), sep='-')) +
+  theme_minimal() +
+  theme(plot.title=element_text(hjust=0.5, face='bold', size=14), 
+        axis.title.x=element_text(vjust=-1, face='bold', size=12), axis.title.y=element_text(vjust=2.5, face='bold', size=12),
+        axis.text.x=element_text(size=10), axis.text.y=element_text(size=10), 
+        plot.subtitle=element_text(hjust=0, face='italic', size=10),
+        plot.margin=margin(0.5,0.5,0.5,0.5, 'cm'))
+```
+
+```{r, echo=FALSE}
+rm(times) # remove `times` dataset
+```
+
+## *2. **Location(s) where the most shooting incidents occurred***
+
+```{r locations_analyze}
+#### ANALYZE: Number of Incidents x Borough and Location
+locations=data %>% distinct(INCIDENT_KEY, .keep_all=T) %>% # remove duplicate incidents so location of occurrence for same incident isn't counted multiple times
+  dplyr::filter(LOCATION_DESC!='UNKNOWN' & LOCATION_DESC!='NONE') %>% # filter out unknown and 'NONE' locations
+  count(BORO, LOCATION_DESC) %>% # count total number of incidents by borough and location
+  mutate(PER_RANK=round(percent_rank(n), 3)*100, # percent rank total number of incidents by borough and location
+         PERCENT=round(n/sum(n), 3)*100) %>% #percentage of shootings that occur at that borough and location (relative to total shootings)
+  arrange(desc(PER_RANK)) # arrange by percentile rank (descending)
+
+locations %>% dplyr::filter(PER_RANK>=75) %>% 
+  select(-PER_RANK) # view locations with a percentile rank of 75% or greater (where incidents occurred most frequently)
+
+### Number of incidents by borough only
+data %>% distinct(INCIDENT_KEY, .keep_all=T) %>% # remove duplicate incidents so location of occurrence for same incident isn't counted multiple times
+  dplyr::filter(LOCATION_DESC!='UNKNOWN' & LOCATION_DESC!='NONE') %>% # filter out unknown and 'NONE' locations
+  count(BORO) %>% mutate(PERCENT=round(n/sum(n), 3)*100) %>% # frequency counts and percentages of shootings by borough
+  arrange(desc(PERCENT)) # arrange by percentage (descending)
+```
+
+```{r locations_plot}
+#### PLOT: Number of Incidents x Borough and Location
+locations %>% dplyr::filter(PER_RANK>=75) %>% # only keep locations with a percentile rank of 75% or greater
+  ggplot(aes(x=BORO, y=n, fill=LOCATION_DESC)) + # plot
+  geom_bar(position='stack', stat='identity', width=0.4) +
+  scale_fill_hue(c=90) + 
+  labs(title='NYPD Shooting Incidents by Borough and Location*', 
+       x='Borough', y='TOTAL Number of Incidents', 
+       fill='Location Type',
+       subtitle=paste(min(data$OCCUR_YEAR), max(data$OCCUR_YEAR), sep='-'), 
+       tag='*75th percentile of data only') +
+  theme_minimal() + 
+  theme(plot.title=element_text(hjust=0.5, face='bold', size=14), 
+        axis.title.x=element_text(vjust=-1, face='bold', size=12), axis.title.y=element_text(vjust=2.5, face='bold', size=12),
+        axis.text.x=element_text(size=8), axis.text.y=element_text(size=10), 
+        plot.subtitle=element_text(hjust=0, face='italic', size=10),
+        legend.text=element_text(size=7), legend.title=element_text(size=11, face='bold'),
+        plot.tag=element_text(size=9, vjust=-3), plot.tag.position='bottomright',
+        legend.position=c(1,1), legend.justification=c(0, 1),
+        plot.margin=margin(0.7,0.7,0.7,0.7, 'cm'))
+```
+
+```{r, echo=FALSE}
+rm(locations) # remove `locations` dataset
+```
+
+## *3. **Age, sex, and race of the perpetrators***
+
+```{r perps_dems_analyze}
+#### ANALYZE: Age, Sex, and Race of Perpetrators
+perps_dems=data %>% select(contains('perp')) %>% # select relevant variables
+  filter_at(vars(contains('perp')), all_vars(.!='UNKNOWN')) # exclude rows where perpetrator information is unknown
+
+### Demographics separately across age, sex, and race  
+perps_dems %>% 
+  lapply(tabyl) %>% 
+  map(., ~.x %>% mutate(percent=round(percent, 3)*100) %>% rename('GROUP'=1, 'PERCENT'='percent') %>% # frequency table for each category (age, sex, race)
+        arrange(desc(PERCENT))) # arrange by relative percent (descending)
+
+### Demographics together across age, sex, and race
+perps_dems %>% 
+  count(across(everything())) %>% # count all combinations of demographics variables
+  mutate(PERCENT=round(n/sum(n), 3)*100) %>% distinct() %>% arrange(desc(PERCENT)) # remove duplicate rows and arrange by relative percent (descending)
+```
+
+```{r perps_dems_plot}
+#### PLOT: Age, Sex, and Race of Perpetrators
+perps_dems %>% count(across(everything())) %>% # count total number of incidents across demographics
+  ggplot(aes(x=PERP_SEX, y=n, fill=PERP_RACE)) + # plot
+  geom_bar(position='stack', stat='identity') +
+  scale_fill_hue(c=90) + 
+  scale_y_continuous(breaks=seq(0, 13000, by=1000)) +
+  labs(title='NYPD Shooting Incidents:\nAge, Sex, and Race of Perpetrators\n', 
+       x='Sex', y='Number of Incidents', 
+       fill='Race', 
+       subtitle=paste(min(data$OCCUR_YEAR), max(data$OCCUR_YEAR), sep='-')) +
+  facet_wrap(~PERP_AGE_GROUP, nrow=1) + 
+  theme_minimal() + 
+  theme(panel.spacing=unit(1, 'lines'),
+        plot.title=element_text(hjust=0.5, face='bold', size=14), 
+        axis.title.x=element_text(vjust=-1, face='bold', size=12), axis.title.y=element_text(vjust=2.5, face='bold', size=12),
+        axis.text.x=element_text(size=10), axis.text.y=element_text(size=10),
+        plot.subtitle=element_text(hjust=0, face='italic', size=10),
+        legend.text=element_text(size=8), legend.title=element_text(size=11, face='bold'))
+```
+
+```{r, echo=FALSE}
+rm(perps_dems) # remove `perps_dems` dataset
+```
+
+## *4. **Age, sex, and race of the victims***
+
+```{r vics_dems_analyze}
+#### ANALYZE: Age, Sex, and Race of Victims
+vics_dems=data %>% select(contains('vic')) %>% # select relevant variables
+  filter_at(vars(contains('vic')), all_vars(.!='UNKNOWN')) # exclude rows where victim information is unknown
+
+### Demographics separately across age, sex, and race
+vics_dems %>% lapply(tabyl) %>% map(., ~.x %>% mutate(percent=round(percent, 3)*100) %>% rename('group'=1) %>% # frequency table for each category (age, sex, race)
+                          arrange(desc(percent))) # arrange by relative percent (descending)
+
+### Demographics together across age, sex, and race
+vics_dems %>% 
+  count(across(everything())) %>% # count all combinations of demographics variables
+  mutate(PERCENT=round(n/sum(n), 3)*100) %>% distinct() %>% arrange(desc(PERCENT)) # remove duplicate rows and arrange by relative percent (descending)
+```
+
+```{r vics_dems_plot}
+#### PLOT: Age, Sex, and Race of Victims
+vics_dems %>% count(across(everything())) %>% # count total number of incidents across demographics
+  ggplot(aes(x=VIC_SEX, y=n, fill=VIC_RACE)) +
+  geom_bar(position='stack', stat='identity') +
+  scale_fill_hue(c=90) +
+  scale_y_continuous(breaks=seq(0, 15000, by=1000)) +
+  labs(title='NYPD Shooting Incidents:\nAge, Sex, and Race of Victims\n',
+       x='Sex', y='Number of Incidents',
+       fill='Race',
+       subtitle=paste(min(data$OCCUR_YEAR), max(data$OCCUR_YEAR), sep='-')) +
+  facet_wrap(~VIC_AGE_GROUP, nrow=1) +
+  theme_minimal() +
+  theme(panel.spacing=unit(1, 'lines'),
+        plot.title=element_text(hjust=0.5, face='bold', size=14),
+        axis.title.x=element_text(vjust=-1, face='bold', size=12), axis.title.y=element_text(vjust=2.5, face='bold', size=12),
+        axis.text.x=element_text(size=10), axis.text.y=element_text(size=10),
+        plot.subtitle=element_text(hjust=0, face='italic', size=10),
+        legend.text=element_text(size=8), legend.title=element_text(size=11, face='bold'))
+```
+
+```{r, echo=FALSE}
+rm(vics_dems) # remove `vics_dems` dataset
+```
+
+# \textbf{\textcolor{blue}{Model Data}}
+
+## *5. **Best predictor(s) of shooting incidents***
+
+Calculate Relative Importance (RI) metrics for a multivariate linear model, by regressing the variables listed below onto the total number of shooting incidents by year, and calculating the R\^2 contribution, averaged over orderings among regressor variables, to see which variables are the relatively most important, and best, indicators of shooting incidents overall.
+
+### **REGRESSOR VARIABLES:**
+
+-   'OCCUR_TIME'
+
+-   'OCCUR_DAY'
+
+-   'BORO'
+
+-   'LOCATION_DESC'
+
+-   'PERP_AGE_GROUP'
+
+-   'PERP_SEX'
+
+-   'PERP_RACE'
+
+-   'VIC_AGE_GROUP'
+
+-   'VIC_SEX'
+
+-   'VIC_RACE'
+
+```{r model_prep}
+### Prep dataset for calculating Relative Importance (RI)
+RI_data=data %>% select(-c(INCIDENT_KEY, OCCUR_YEAR)) # select relevant variables
+
+all(sapply(RI_data[,-1], is.factor)) # make sure analysis variables are factor types (except for 'YR_TOTAL_INCIDENTS')
+
+RI_data # view dataset
+```
+
+```{r model_analyze}
+#### ANALYZE: Calculate Relative Importance (RI) using Fitted Regression Model
+RI=data.frame(calc.relimp(RI_data, type='lmg', rela=T)$lmg)
+
+### Rank relative contributions/importance of regressor variables as percentages, from most important to least important
+RI=RI %>% 
+  rename('RI_percent'=1) %>% # 'RI_percent' => relative contributions, as percentages, obtained from the regression method
+  rownames_to_column('REGRESS_VAR') %>% # name regressor variables column ('REGRESS_VAR')
+  mutate(RI_percent=round(RI_percent, 3)*100) %>% arrange(desc(RI_percent)) # format 'RI_percent' as percent and arrange by decreasing relative importance
+  
+RI # view dataset
+```
+
+```{r model_plot}
+#### PLOT: Relative Importance (RI) Metrics
+RI %>%
+  ggplot(aes(x=REGRESS_VAR, y=RI_percent, color=REGRESS_VAR)) + # plot
+  geom_bar(stat='identity', fill='white', size=0.7) +
+  scale_color_hue(c=90) +
+  labs(title='Relative Importances for Total Shooting Incidents\nby Year\n\nMethod LMG',
+       subtitle=paste(min(data$OCCUR_YEAR), max(data$OCCUR_YEAR), sep='-'),
+       colour='Regressor Variables',
+       x=c(as.expression(bquote(~ R^2 ~ '= 4.86%, metrics are normalized to sum 100%.'))),
+       y=c(as.expression(bquote('% of' ~ R^2)))) +
+  theme_minimal() +
+  theme(plot.title=element_text(hjust=0.5, face='bold', size=14),
+        axis.title.x=element_text(vjust=-1, face='bold', size=12), axis.title.y=element_text(vjust=2.5, face='bold', size=12),
+        axis.text.x=element_blank(), axis.text.y=element_text(size=10),
+        plot.subtitle=element_text(hjust=0, face='italic', size=10),
+        legend.text=element_text(size=10), legend.title=element_text(size=11, face='bold'),
+        plot.margin=margin(0.5,0.5,0.5,0.5, 'cm'))
+```
+
+```{r, echo=FALSE}
+rm(RI_data, RI) # remove `RI_data` & `RI` datasets
+```
+
+# \textbf{\textcolor{red}{Conclusion}}
+
+Data analyses run on run on the NYPD shooting incident data, from 2006 to 2021, answered the following objectives:
+
+***1. Day(s) and time(s) when the most shooting incidents occurred***
+
+The greatest number of shootings occurred on Sundays (19.8%), followed by Saturdays (18.9%).
+
+46% of shootings occurred from 9pm-2am, peaking with 8.6% of all shootings at 11pm. The second greatest number of shootings (31%) occurred from 5pm-8pm and 3am-4am, peaking at 8pm with 6.2% of all shootings happening at that hour.
+
+***2. Location(s) where the most shooting incidents occurred***
+
+The most shootings occurred in Brooklyn, which saw 44.4% of shootings, followed by the Bronx with 25.4% of shootings.
+
+Out of all shooting incidents, 22.1% occurred specifically at Brooklyn public housing dwellings and 10.7% occurred at Brooklyn apartment buildings.
+
+The Bronx saw similar rankings, with 10.5% of overall shootings occurring at Bronx public housing dwellings and 8.5% of overall shootings occurring at Bronx apartment buildings.
+
+***3. Age, sex, and race of the perpetrators***
+
+In 44.6% of shooting incidents, perpetrators were between the ages of 18-24. Males were the perpetrators in 97.3% of shooting incidents, and 72.7% of perpetrators were Black.
+
+In 31.7% of shooting incidents, perpetrators were Black men aged 18-24, followed by Black men 25-44 years of age (28.3% of incidents).
+
+***4. Age, sex, and race of the victims***
+
+In 44.6% of shooting incidents, victims were between the ages of 25-44. Males were the victims in 90.6% of shooting incidents, and 71.7% of victims were Black.
+
+In 29.5% of shooting incidents, victims were Black men aged 25-44, followed by Black men 18-24 years of age (25.3% of incidents).
+
+***5. Best predictor(s) of shooting incidents***
+
+The best predictors of shooting incidents (based on their relative importance (RI) predicting shootings), in decreasing order, were perpetrator age, location, perpetrator sex, perpetrator race, victim age, time of day, borough, day of the week, victim race, and victim sex (RI=39%, 23%, 12.1%, 9.7%, 7.5%, 5.4%, 1.5%, 1%, 0.7%, 0.2%).
+
+\hfill\break
+
+\textbf{\underline{Bias Identification}}
+
+Possible external sources of bias for this data may be under-reported shootings. There may be shootings that are not reported to the New York Police Department, and, thus, excluded from the data. There may also be shootings that are reported but not thoroughly investigated by the NYPD, resulting in copious amounts of 'unknown' data from these reported shootings.
+
+Additionally, shootings from lower socioeconomic areas may be disproportionately reported and appear in the data more, skewing the data towards those areas and the individuals who live there.
+
+Also, the data does not take population sizes of the boroughs into account, which may skew the data to make boroughs with smaller population sizes more dangerous, because shooting incidents are not reported per capita, and population data is not included in the dataset.
+
+Possible personal sources of bias for this analysis may be implicit bias and pre-conceived notions about how the data will look. For example, I believed that the Bronx would be the borough with the most shootings, Fridays and Saturdays would have the most shootings, and women would make up the majority of victims. However, upon analyzing the data, I was surprised to see that Brooklyn was the borough with the most shootings, Sundays and Mondays had the more shootings than Fridays, and men made up the overwhelming majority of shooting victims.
+
+That's why it's important to put any biases aside when analyzing data so that you can make data-driven and data-backed conclusions, rather than basing them on personal beliefs or a priori conceptions and drawing incorrect, and possibly harmful, conclusions.
